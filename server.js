@@ -1,8 +1,8 @@
 require("dotenv").config();
 const express=require("express"),cors=require("cors"),mongoose=require("mongoose"),bcrypt=require("bcryptjs"),jwt=require("jsonwebtoken");
 const app=express();const allowedOrigins = [
-  "https://haverent.netlify.app",
-  "https://haverent.netlify.app",
+  "https://haveerent.netlify.app",
+  "https://haveerent.netlify.app",
   "http://localhost:3000",
   "http://localhost:5173"
 ];
