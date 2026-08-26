@@ -1,0 +1,35 @@
+require("dotenv").config();
+const express=require("express"),cors=require("cors"),mongoose=require("mongoose"),bcrypt=require("bcryptjs"),jwt=require("jsonwebtoken");
+const app=express();const allowedOrigins = [
+  "https://haverent.netlify.app",
+  "http://localhost:3000",
+  "http://localhost:5173"
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error("CORS: Origin not allowed"));
+  },
+  credentials: true
+}));app.use(express.json({limit:"3mb"}));
+mongoose.connect(process.env.MONGODB_URI).then(()=>console.log("MongoDB connected")).catch(e=>console.error(e.message));
+const userSchema=new mongoose.Schema({name:String,email:{type:String,unique:true},password:String,role:{type:String,enum:["tenant","owner","admin"],default:"tenant"}},{timestamps:true});
+const propertySchema=new mongoose.Schema({title:String,type:{type:String,enum:["House","PG"]},location:String,rent:Number,rooms:String,amenities:String,image:String,images:[String],owner:{type:mongoose.Schema.Types.ObjectId,ref:"User"}},{timestamps:true});
+const bookingSchema=new mongoose.Schema({property:{type:mongoose.Schema.Types.ObjectId,ref:"Property"},tenant:{type:mongoose.Schema.Types.ObjectId,ref:"User"},status:{type:String,enum:["Pending","Accepted","Rejected","Completed"],default:"Pending"},paymentStatus:{type:String,enum:["Unpaid","Paid","Failed"],default:"Unpaid"}},{timestamps:true});
+const User=mongoose.model("User",userSchema),Property=mongoose.model("Property",propertySchema),Booking=mongoose.model("Booking",bookingSchema);
+const sign=u=>jwt.sign({id:u._id,role:u.role},process.env.JWT_SECRET,{expiresIn:"7d"});
+function auth(req,res,next){try{let t=req.headers.authorization?.split(" ")[1];if(!t)throw 0;req.user=jwt.verify(t,process.env.JWT_SECRET);next()}catch{res.status(401).json({message:"Unauthorized"})}}
+function role(...rs){return (req,res,next)=>rs.includes(req.user.role)?next():res.status(403).json({message:"Access denied"})}
+app.get("/api/health",(q,s)=>s.json({ok:true,name:"HavenRent API"}));
+app.post("/api/auth/register",async(req,res)=>{try{let{name,email,password,role="tenant"}=req.body;if(!name||!email||!password)return res.status(400).json({message:"Name, email and password required"});if(await User.findOne({email}))return res.status(409).json({message:"Email already registered"});let u=await User.create({name,email,password:await bcrypt.hash(password,12),role});res.status(201).json({token:sign(u),user:{id:u._id,name:u.name,email:u.email,role:u.role}})}catch(e){res.status(500).json({message:e.message})}});
+app.post("/api/auth/login",async(req,res)=>{try{let u=await User.findOne({email:req.body.email});if(!u||!(await bcrypt.compare(req.body.password,u.password)))return res.status(401).json({message:"Invalid email or password"});res.json({token:sign(u),user:{id:u._id,name:u.name,email:u.email,role:u.role}})}catch(e){res.status(500).json({message:e.message})}});
+app.get("/api/properties",async(q,s)=>s.json({properties:await Property.find().sort({createdAt:-1})}));
+app.post("/api/properties",auth,role("owner","admin"),async(req,res)=>{let p=await Property.create({...req.body,owner:req.user.id});res.status(201).json(p)});
+app.put("/api/properties/:id",auth,role("owner","admin"),async(req,res)=>{let p=await Property.findOneAndUpdate({_id:req.params.id,...(req.user.role==="owner"?{owner:req.user.id}:{})},req.body,{new:true});if(!p)return res.status(404).json({message:"Listing not found"});res.json(p)});
+app.delete("/api/properties/:id",auth,role("owner","admin"),async(req,res)=>{let p=await Property.findOneAndDelete({_id:req.params.id,...(req.user.role==="owner"?{owner:req.user.id}:{})});if(!p)return res.status(404).json({message:"Listing not found"});res.json({message:"Listing deleted"})});
+app.post("/api/bookings",auth,role("tenant"),async(req,res)=>{let p=await Property.findById(req.body.propertyId);if(!p)return res.status(404).json({message:"Property not found"});let b=await Booking.create({property:p._id,tenant:req.user.id});res.status(201).json({message:`Booking created. ${p.type==="PG"?"₹100":"₹150"} booking fee applies.`,booking:b})});
+app.get("/api/bookings",auth,async(req,res)=>{let q=req.user.role==="tenant"?{tenant:req.user.id}:req.user.role==="owner"?{}:{};let b=await Booking.find(q).populate("property tenant");res.json({bookings:b})});
+app.patch("/api/bookings/:id",auth,role("owner","admin"),async(req,res)=>{let b=await Booking.findByIdAndUpdate(req.params.id,{status:req.body.status},{new:true});if(!b)return res.status(404).json({message:"Booking not found"});res.json(b)});
+app.get("/api/dashboard",auth,async(req,res)=>{let bookings=await Booking.countDocuments(req.user.role==="tenant"?{tenant:req.user.id}:{});let listings=await Property.countDocuments(req.user.role==="owner"?{owner:req.user.id}:{});res.json({bookings,listings})});
+app.get("/api/admin/stats",auth,role("admin"),async(q,s)=>s.json({users:await User.countDocuments(),listings:await Property.countDocuments(),bookings:await Booking.countDocuments()}));
+app.listen(process.env.PORT||5000,()=>console.log("HavenRent API listening"));
